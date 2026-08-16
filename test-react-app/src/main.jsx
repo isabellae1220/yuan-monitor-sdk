@@ -3,21 +3,42 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
 import { init } from 'yuan-monitor-sdk'
+import { APP_RELEASE } from './release.js'
+import { MONITOR_SERVER_URL } from './runtimeConfig.js'
 
 // 初始化监控SDK
 const monitor = init({
   appKey: 'test-app-key',
-  serverUrl: 'http://localhost:3001',
-  debug: true,
+  environment: import.meta.env.PROD ? 'production' : 'development',
+  release: APP_RELEASE,
+  serverUrl: MONITOR_SERVER_URL,
+  debug: !import.meta.env.PROD,
+  privacy: {
+    ignoreUrls: ['/api/demo/ignored']
+  },
   framework: {
     react: true
   },
+  // 分项开启性能采集；内存指标仍关闭，因为 performance.memory 只在部分浏览器可用
+  performance: {
+    enable: true,
+    captureWebVitals: true,
+    captureResourceTiming: true,
+    captureLongTasks: true,
+    captureMemory: false
+  },
   advanced: {
-    enableSessionReplay: true,
+    // 暂时关闭录屏，验证浏览器崩溃是否由 rrweb/SessionReplay 引起
+    enableSessionReplay: false,
     sessionReplaySampleRate: 1
   },
   reporter: {
     reportMethod: 'fetch',
+    batchSize: 5,
+    batchInterval: 5000,
+    maxQueueSize: 20,
+    retryCount: 3,
+    retryDelay: 1000,
     debug: true
   }
 })

@@ -91,6 +91,42 @@ describe('ErrorCollector', () => {
     expect(emittedErrors[0].message).toBe('Promise rejected');
   });
 
+  test('Promise 使用字符串拒绝时保留真实原因', () => {
+    collector.init();
+
+    const emittedErrors = [];
+    eventBus.on('error:captured', (data) => emittedErrors.push(data));
+
+    window.onunhandledrejection({ reason: '字符串形式的失败原因' });
+
+    expect(emittedErrors[0].type).toBe('promise');
+    expect(emittedErrors[0].message).toBe('字符串形式的失败原因');
+  });
+
+  test('资源加载错误保留资源地址和页面地址', () => {
+    collector.init();
+
+    const emittedErrors = [];
+    eventBus.on('error:captured', (data) => emittedErrors.push(data));
+
+    const resourceCall = window.addEventListener.mock.calls.find(
+      ([eventName]) => eventName === 'error'
+    );
+    const resourceHandler = resourceCall[1];
+
+    resourceHandler({
+      target: {
+        tagName: 'IMG',
+        src: 'http://test.com/missing.png',
+        outerHTML: '<img src="/missing.png">'
+      }
+    });
+
+    expect(emittedErrors[0].type).toBe('resource');
+    expect(emittedErrors[0].resourceUrl).toBe('http://test.com/missing.png');
+    expect(emittedErrors[0].url).toBe('http://test.com');
+  });
+
   test('Script error 被过滤不上报', () => {
     collector.init();
 
@@ -114,6 +150,15 @@ describe('ErrorCollector', () => {
     collector.destroy();
     expect(window.onerror).toBe(originalOnerror);
     expect(window.onunhandledrejection).toBe(originalOnunhandledrejection);
+  });
+
+  test('原始错误处理函数为 null 时 destroy 仍能正确恢复', () => {
+    collector.init();
+
+    collector.destroy();
+
+    expect(window.onerror).toBeNull();
+    expect(window.onunhandledrejection).toBeNull();
   });
 
   test('handleError 添加 url 和 userAgent', () => {

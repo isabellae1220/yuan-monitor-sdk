@@ -45,8 +45,9 @@ class PerformanceCollector {
   setupWebVitalsCollector() {
     if (webVitals) {
       this._setupWebVitalsHandlers();
+      return Promise.resolve();
     } else {
-      loadWebVitals().then(() => {
+      return loadWebVitals().then(() => {
         if (webVitals) {
           this._setupWebVitalsHandlers();
         }
@@ -73,19 +74,25 @@ class PerformanceCollector {
     
     if (webVitals.onCLS) webVitals.onCLS(handleWebVital);
     if (webVitals.onFCP) webVitals.onFCP(handleWebVital);
-    if (webVitals.onFID) webVitals.onFID(handleWebVital);
+    if (webVitals.onINP) webVitals.onINP(handleWebVital);
     if (webVitals.onLCP) webVitals.onLCP(handleWebVital);
     if (webVitals.onTTFB) webVitals.onTTFB(handleWebVital);
   }
   
   setupResourceTimingCollector() {
-    if (!window.PerformanceObserver) return;
+    const PerformanceObserverClass = window.PerformanceObserver;
+    if (!PerformanceObserverClass) return;
     
     if (!window.performance?.getEntriesByType) {
       return;
     }
+
+    const supportedEntryTypes = PerformanceObserverClass.supportedEntryTypes;
+    if (Array.isArray(supportedEntryTypes) && !supportedEntryTypes.includes('resource')) {
+      return;
+    }
     
-    this.resourceObserver = new PerformanceObserver((list) => {
+    this.resourceObserver = new PerformanceObserverClass((list) => {
       list.getEntries().forEach((entry) => {
         if (['fetch', 'xmlhttprequest', 'beacon'].includes(entry.initiatorType)) {
           return; // 过滤掉网络请求，由网络监控处理
@@ -111,19 +118,26 @@ class PerformanceCollector {
       });
     });
     
-    if (window.performance.entryTypes && 'resource' in window.performance.entryTypes) {
+    try {
       this.resourceObserver.observe({ type: 'resource', buffered: true });
-    } else if (window.performance.entryTypes) {
+    } catch (error) {
+      // 兼容不支持 type + buffered 参数的旧浏览器
       this.resourceObserver.observe({ entryTypes: ['resource'] });
     }
   }
   
   setupLongTasksCollector() {
-    if (!window.PerformanceObserver || !window.performance?.entryTypes || !('longtask' in window.performance.entryTypes)) {
+    const PerformanceObserverClass = window.PerformanceObserver;
+    if (!PerformanceObserverClass) {
+      return;
+    }
+
+    const supportedEntryTypes = PerformanceObserverClass.supportedEntryTypes;
+    if (Array.isArray(supportedEntryTypes) && !supportedEntryTypes.includes('longtask')) {
       return;
     }
     
-    this.longTaskObserver = new PerformanceObserver((list) => {
+    this.longTaskObserver = new PerformanceObserverClass((list) => {
       const entries = list.getEntries();
       entries.forEach((entry) => {
         const data = {
@@ -138,7 +152,12 @@ class PerformanceCollector {
       });
     });
     
-    this.longTaskObserver.observe({ entryTypes: ['longtask'] });
+    try {
+      this.longTaskObserver.observe({ type: 'longtask', buffered: true });
+    } catch (error) {
+      // 兼容只接受 entryTypes 参数的旧浏览器
+      this.longTaskObserver.observe({ entryTypes: ['longtask'] });
+    }
   }
   
   setupMemoryCollector() {

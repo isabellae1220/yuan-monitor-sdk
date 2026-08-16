@@ -7,7 +7,6 @@ import VueIntegration from './framework/vueIntegration';
 import ReactIntegration from './framework/reactIntegration';
 import SessionReplay from './advanced/sessionReplay';
 import WhiteScreenDetector from './advanced/whiteScreenDetector';
-import SourceMapParser from './advanced/sourceMapParser';
 import eventBus from './core/eventBus';
 
 class YuanMonitor {
@@ -25,7 +24,6 @@ class YuanMonitor {
     this.reactIntegration = new ReactIntegration(this.config);
     this.sessionReplay = new SessionReplay(this.config);
     this.whiteScreenDetector = new WhiteScreenDetector(this.config);
-    this.sourceMapParser = new SourceMapParser(this.config);
 
     // 设置事件总线监听器
     this.setupEventListeners();
@@ -41,7 +39,6 @@ class YuanMonitor {
       this.reactIntegration.init();
       this.sessionReplay.init();
       this.whiteScreenDetector.init();
-      this.sourceMapParser.init();
 
       // 初始化完成后暴露 React ErrorBoundary 组件
       this.ErrorBoundary = this.reactIntegration.getErrorBoundary();
@@ -83,7 +80,6 @@ class YuanMonitor {
     this.reactIntegration.config = this.config;
     this.sessionReplay.config = this.config;
     this.whiteScreenDetector.config = this.config;
-    this.sourceMapParser.config = this.config;
 
     return this;
   }
@@ -161,7 +157,6 @@ class YuanMonitor {
     this.dataReporter.destroy();
     this.sessionReplay.destroy();
     this.whiteScreenDetector.destroy();
-    this.sourceMapParser.destroy();
     this.core.destroy();
 
     eventBus.clear();

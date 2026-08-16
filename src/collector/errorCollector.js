@@ -5,6 +5,8 @@ class ErrorCollector {
     this.config = config;
     this.originalOnerror = null;
     this.originalOnunhandledrejection = null;
+    this.globalErrorHandler = null;
+    this.promiseRejectionHandler = null;
     this.resourceErrorHandler = null;
   }
   
@@ -23,8 +25,8 @@ class ErrorCollector {
     
     this.originalOnerror = window.onerror;
     
-    window.onerror = (message, source, lineno, colno, error) => {
-      // 过滤掉资源错误，因为已经由resourceErrorHandler处理
+    this.globalErrorHandler = (message, source, lineno, colno, error) => {
+      // 跨域脚本未正确配置 CORS 时，浏览器可能只暴露不含详情的 Script error
       if (typeof message === 'string' && message.startsWith('Script error')) {
         return this.originalOnerror?.(message, source, lineno, colno, error);
       }
@@ -41,6 +43,8 @@ class ErrorCollector {
       
       return this.originalOnerror?.(message, source, lineno, colno, error);
     };
+
+    window.onerror = this.globalErrorHandler;
   }
   
   setupPromiseRejectionHandler() {
@@ -48,12 +52,17 @@ class ErrorCollector {
     
     this.originalOnunhandledrejection = window.onunhandledrejection;
     
-    window.onunhandledrejection = (event) => {
+    this.promiseRejectionHandler = (event) => {
       const reason = event.reason;
+      const message = reason?.message || (
+        reason !== undefined && reason !== null
+          ? String(reason)
+          : 'Unhandled promise rejection'
+      );
       
       this.handleError({
         type: 'promise',
-        message: reason?.message || 'Unhandled promise rejection',
+        message,
         stack: reason?.stack,
         reason,
         promise: event.promise
@@ -61,6 +70,8 @@ class ErrorCollector {
       
       return this.originalOnunhandledrejection?.(event);
     };
+
+    window.onunhandledrejection = this.promiseRejectionHandler;
   }
   
   setupResourceErrorHandler() {
@@ -72,7 +83,7 @@ class ErrorCollector {
         this.handleError({
           type: 'resource',
           tagName: target.tagName,
-          url: target.src || target.href,
+          resourceUrl: target.src || target.href,
           outerHTML: target.outerHTML
         });
       }
@@ -95,17 +106,21 @@ class ErrorCollector {
   
   destroy() {
     // 恢复原始的错误处理函数
-    if (this.originalOnerror) {
+    if (window.onerror === this.globalErrorHandler) {
       window.onerror = this.originalOnerror;
     }
     
-    if (this.originalOnunhandledrejection) {
+    if (window.onunhandledrejection === this.promiseRejectionHandler) {
       window.onunhandledrejection = this.originalOnunhandledrejection;
     }
     
     if (this.resourceErrorHandler) {
       window.removeEventListener('error', this.resourceErrorHandler, true);
     }
+
+    this.globalErrorHandler = null;
+    this.promiseRejectionHandler = null;
+    this.resourceErrorHandler = null;
     
     eventBus.emit('collector:error:destroyed');
   }

@@ -130,9 +130,9 @@ describe('集成测试：SDK 完整流程', () => {
     expect(sessionReplay.pendingErrorCount).toBe(1);
 
     // 验证 DataReporter 队列中有错误数据
-    const errorItem = dataReporter.queue.find(item => item.type === 'error');
+    const errorItem = dataReporter.queue.find(item => item.eventType === 'error');
     expect(errorItem).toBeDefined();
-    expect(errorItem.errorData.type).toBe('js');
+    expect(errorItem.subType).toBe('js');
     expect(errorItem.breadcrumbs.length).toBe(2);
   });
 
@@ -193,10 +193,10 @@ describe('集成测试：SDK 完整流程', () => {
     });
 
     // 4. DataReporter 应已收到错误数据（含面包屑）
-    const errorItem = dataReporter.queue.find(item => item.type === 'error');
+    const errorItem = dataReporter.queue.find(item => item.eventType === 'error');
     expect(errorItem).toBeDefined();
     expect(errorItem.breadcrumbs.length).toBe(1);
-    expect(errorItem.errorData.message).toBe('Network Error');
+    expect(errorItem.data.message).toBe('Network Error');
 
     // 5. SessionReplay 应标记了错误位置
     expect(sessionReplay.pendingErrorCount).toBe(1);

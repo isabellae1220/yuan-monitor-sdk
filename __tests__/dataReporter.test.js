@@ -24,6 +24,7 @@ Object.defineProperty(global, 'window', {
     innerWidth: 1920,
     innerHeight: 1080,
     screen: { width: 1920, height: 1080 },
+    navigator: global.navigator,
     get fetch() { return global.fetch; }
   },
   writable: true
@@ -97,10 +98,63 @@ describe('DataReporter', () => {
     // 队列中应有数据
     expect(reporter.queue.length).toBeGreaterThanOrEqual(1);
     // 找到错误类型的数据
-    const errorItem = reporter.queue.find(item => item.type === 'error');
+    const errorItem = reporter.queue.find(item => item.eventType === 'error');
     expect(errorItem).toBeDefined();
     expect(errorItem.breadcrumbs).toEqual(breadcrumbs);
-    expect(errorItem.errorData.message).toBe('test error');
+    expect(errorItem.data.message).toBe('test error');
+  });
+
+  test('去重窗口内相同错误合并为一条并累计次数', () => {
+    reporter.init();
+    eventBus.on('core:getSessionId', () => 'session-123');
+    eventBus.on('core:getUserId', () => 'user-456');
+    eventBus.on('core:getUserData', () => ({}));
+
+    const sameError = {
+      type: 'js',
+      message: 'same error',
+      source: 'http://test.com/src/App.jsx',
+      lineno: 14,
+      colno: 13
+    };
+
+    eventBus.emit('error:captured', { ...sameError, timestamp: 1000 });
+    eventBus.emit('error:captured', { ...sameError, timestamp: 2000 });
+
+    const errors = reporter.queue.filter(item => item.eventType === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0].fingerprint).toMatch(/^fp_/);
+    expect(errors[0].occurrenceCount).toBe(2);
+    expect(errors[0].firstSeenAt).toBe(1000);
+    expect(errors[0].lastSeenAt).toBe(2000);
+  });
+
+  test('指纹不同的错误不会被合并', () => {
+    reporter.init();
+    eventBus.on('core:getSessionId', () => 'session-123');
+    eventBus.on('core:getUserId', () => '');
+    eventBus.on('core:getUserData', () => ({}));
+
+    eventBus.emit('error:captured', {
+      type: 'js',
+      message: 'same message',
+      source: 'http://test.com/src/App.jsx',
+      lineno: 14,
+      colno: 13,
+      timestamp: 1000
+    });
+    eventBus.emit('error:captured', {
+      type: 'js',
+      message: 'same message',
+      source: 'http://test.com/src/App.jsx',
+      lineno: 15,
+      colno: 13,
+      timestamp: 2000
+    });
+
+    const errors = reporter.queue.filter(item => item.eventType === 'error');
+    expect(errors).toHaveLength(2);
+    expect(errors[0].fingerprint).not.toBe(errors[1].fingerprint);
   });
 
   test('队列达到 batchSize 时立即上报', () => {
@@ -135,6 +189,78 @@ describe('DataReporter', () => {
     );
   });
 
+  test('fetch 失败时只重试配置次数，并复用同一份数据', async () => {
+    jest.useFakeTimers();
+    global.fetch.mockRejectedValue(new Error('network error'));
+    reporter.config.reporter.retryCount = 2;
+    reporter.config.reporter.retryDelay = 10;
+
+    const failedHandler = jest.fn();
+    eventBus.on('reporter:report:failed', failedHandler);
+
+    reporter.report([{ type: 'performance', subType: 'LCP' }]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const firstBody = global.fetch.mock.calls[0][1].body;
+
+    jest.advanceTimersByTime(10);
+    await Promise.resolve();
+    await Promise.resolve();
+    jest.advanceTimersByTime(20);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(global.fetch).toHaveBeenCalledTimes(3);
+    expect(global.fetch.mock.calls.map(call => call[1].body)).toEqual([
+      firstBody,
+      firstBody,
+      firstBody
+    ]);
+    expect(failedHandler).toHaveBeenCalledTimes(1);
+
+    global.fetch.mockResolvedValue({ ok: true });
+    jest.useRealTimers();
+  });
+
+  test('HTTP 400 属于不可恢复错误，不进行指数退避重试', async () => {
+    jest.useFakeTimers();
+    global.fetch.mockResolvedValue({ ok: false, status: 400 });
+    const failedHandler = jest.fn();
+    eventBus.on('reporter:report:failed', failedHandler);
+
+    reporter.report([{ eventType: 'behavior', subType: 'invalid' }]);
+    await Promise.resolve();
+    await Promise.resolve();
+    jest.advanceTimersByTime(10000);
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    expect(failedHandler).toHaveBeenCalledTimes(1);
+    expect(failedHandler.mock.calls[0][0].error.status).toBe(400);
+
+    global.fetch.mockResolvedValue({ ok: true, status: 200 });
+    jest.useRealTimers();
+  });
+
+  test('HTTP 500 属于临时服务端故障，按配置重试', async () => {
+    jest.useFakeTimers();
+    global.fetch.mockResolvedValue({ ok: false, status: 500 });
+    reporter.config.reporter.retryCount = 1;
+    reporter.config.reporter.retryDelay = 10;
+
+    reporter.report([{ eventType: 'performance', subType: 'LCP' }]);
+    await Promise.resolve();
+    await Promise.resolve();
+    jest.advanceTimersByTime(10);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+
+    global.fetch.mockResolvedValue({ ok: true, status: 200 });
+    jest.useRealTimers();
+  });
+
   test('destroy 时上报剩余数据', () => {
     reporter.init();
     eventBus.on('core:getSessionId', () => 'session-123');
@@ -147,7 +273,7 @@ describe('DataReporter', () => {
     expect(global.fetch).toHaveBeenCalled();
   });
 
-  test('页面卸载时上报剩余数据', () => {
+  test('页面隐藏时优先使用 Beacon 上报剩余数据', () => {
     reporter.init();
     eventBus.on('core:getSessionId', () => 'session-123');
     eventBus.on('core:getUserId', () => '');
@@ -159,8 +285,35 @@ describe('DataReporter', () => {
     global.document.visibilityState = 'hidden';
     reporter._onPageUnload();
 
-    expect(global.fetch).toHaveBeenCalled();
+    expect(mockSendBeacon).toHaveBeenCalledWith(
+      'http://localhost:3001/api/report',
+      expect.any(Blob)
+    );
+    expect(global.fetch).not.toHaveBeenCalled();
     global.document.visibilityState = 'visible';
+  });
+
+  test('pagehide 即使发生在 visibilityState 更新前也会刷新队列', () => {
+    reporter.init();
+    reporter.addToQueue({ type: 'test' });
+
+    global.document.visibilityState = 'visible';
+    reporter._onPageUnload({ type: 'pagehide' });
+
+    expect(mockSendBeacon).toHaveBeenCalled();
+    expect(reporter.queue).toHaveLength(0);
+  });
+
+  test('Beacon 拒绝接收数据时回退到 Fetch keepalive', () => {
+    mockSendBeacon.mockReturnValueOnce(false);
+
+    reporter.report([{ type: 'test' }], { preferBeacon: true });
+
+    expect(mockSendBeacon).toHaveBeenCalled();
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://localhost:3001/api/report',
+      expect.objectContaining({ keepalive: true })
+    );
   });
 
   test('sessionId 通过 EventBus 正确获取', () => {
@@ -169,12 +322,15 @@ describe('DataReporter', () => {
     eventBus.on('core:getUserId', () => '');
     eventBus.on('core:getUserData', () => ({}));
 
-    reporter.addToQueue({ type: 'test' });
+    eventBus.emit('error:captured', {
+      type: 'manual',
+      message: 'session test'
+    });
     reporter.flush();
 
     const callArgs = global.fetch.mock.calls[0];
     const body = JSON.parse(callArgs[1].body);
-    expect(body.sessionId).toBe('my-session-id');
+    expect(body.events[0].sessionId).toBe('my-session-id');
   });
 
   test('取消订阅使用保存的引用，destroy 后不再接收事件', () => {

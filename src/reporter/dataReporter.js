@@ -1,4 +1,6 @@
 import eventBus from '../core/eventBus';
+import createMonitorEvent from '../core/eventBuilder';
+import createErrorFingerprint from '../core/errorFingerprint';
 
 class DataReporter {
   constructor(config) {
@@ -29,7 +31,7 @@ class DataReporter {
     eventBus.on('behavior:breadcrumb', this._boundHandlers.breadcrumb);
 
     // 页面卸载时上报剩余数据
-    this._unloadHandler = () => this._onPageUnload();
+    this._unloadHandler = (event) => this._onPageUnload(event);
     window.addEventListener('visibilitychange', this._unloadHandler);
     window.addEventListener('pagehide', this._unloadHandler);
 
@@ -39,16 +41,25 @@ class DataReporter {
   /**
    * 页面卸载时上报队列中的剩余数据
    */
-  _onPageUnload() {
-    if (document.visibilityState === 'hidden' && this.queue.length > 0) {
-      this.flushQueue();
+  _onPageUnload(event) {
+    const isPageHide = event?.type === 'pagehide';
+    const isDocumentHidden = document.visibilityState === 'hidden';
+
+    if ((isPageHide || isDocumentHidden) && this.queue.length > 0) {
+      this.flushQueue({ preferBeacon: true });
     }
   }
 
   addToQueue(data) {
     if (!data || !this.config.serverUrl) return;
 
+    if (this._mergeDuplicateError(data)) return;
+
     this.queue.push(data);
+
+    if (this.config.debug) {
+      console.log(`[Monitor] 数据入队: ${data.eventType || data.type || 'unknown'}，当前队列 ${this.queue.length} 条`);
+    }
 
     // 队列超过最大限制，立即上报
     if (this.queue.length >= this.config.reporter.maxQueueSize) {
@@ -74,11 +85,15 @@ class DataReporter {
     }, this.config.reporter.batchInterval);
   }
 
-  flushQueue() {
+  flushQueue({ preferBeacon = false } = {}) {
     if (this.queue.length === 0) return;
 
     const batchData = [...this.queue];
     this.queue = [];
+
+    if (this.config.debug) {
+      console.log(`[Monitor] 开始批量上报: ${batchData.length} 条`);
+    }
 
     // 清除定时器
     if (this.timer) {
@@ -86,7 +101,7 @@ class DataReporter {
       this.timer = null;
     }
 
-    this.report(batchData);
+    this.report(batchData, { preferBeacon });
   }
 
   _reportError(errorData) {
@@ -95,85 +110,144 @@ class DataReporter {
 
     // 提取可序列化的错误信息，避免循环引用导致 JSON.stringify 失败
     const safeErrorData = {
-      type: errorData.type,
       message: errorData.message,
       stack: errorData.stack,
       source: errorData.source,
       lineno: errorData.lineno,
       colno: errorData.colno,
       tagName: errorData.tagName,
-      url: errorData.url,
       componentStack: errorData.componentStack,  // React ErrorBoundary
+      originalStack: errorData.originalStack,    // Source Map 还原结果
       info: errorData.info,                      // Vue errorHandler
       outerHTML: errorData.outerHTML,            // 资源加载错误
+      resourceUrl: errorData.resourceUrl,        // 加载失败的资源地址
       componentName: errorData.componentName,    // Vue/React 组件名
       context: errorData.context                 // 手动上报的上下文
     };
 
-    const data = {
-      type: 'error',
+    const event = this._createEvent({
+      eventType: 'error',
       subType: errorData.type,
-      timestamp: Date.now(),
-      errorData: safeErrorData,
+      timestamp: errorData.timestamp || Date.now(),
+      pageUrl: errorData.url,
+      data: safeErrorData,
       breadcrumbs
-    };
+    });
 
-    this.addToQueue(data);
+    event.fingerprint = createErrorFingerprint(event);
+    event.occurrenceCount = 1;
+    event.firstSeenAt = event.timestamp;
+    event.lastSeenAt = event.timestamp;
+
+    this.addToQueue(event);
+  }
+
+  _mergeDuplicateError(event) {
+    if (event.eventType !== 'error' || !event.fingerprint) return false;
+
+    const errorConfig = this.config.error || {};
+    if (errorConfig.enableDedupe === false) return false;
+
+    const dedupeWindow = errorConfig.dedupeWindow ?? 5000;
+    const duplicate = this.queue.find(item => (
+      item.eventType === 'error' &&
+      item.fingerprint === event.fingerprint &&
+      Math.abs(event.timestamp - (item.lastSeenAt || item.timestamp)) <= dedupeWindow
+    ));
+
+    if (!duplicate) return false;
+
+    duplicate.occurrenceCount = (duplicate.occurrenceCount || 1) + 1;
+    duplicate.lastSeenAt = Math.max(duplicate.lastSeenAt || duplicate.timestamp, event.timestamp);
+
+    if (this.config.debug) {
+      console.log(
+        `[Monitor] 合并重复错误: ${event.fingerprint}，累计 ${duplicate.occurrenceCount} 次`
+      );
+    }
+
+    return true;
   }
 
   _reportPerformance(performanceData) {
-    const data = {
-      type: 'performance',
-      subType: performanceData.type,
-      timestamp: Date.now(),
-      ...performanceData
-    };
+    const detail = { ...performanceData };
+    delete detail.type;
+    delete detail.timestamp;
 
-    this.addToQueue(data);
+    const event = this._createEvent({
+      eventType: 'performance',
+      subType: performanceData.type,
+      timestamp: performanceData.timestamp || Date.now(),
+      data: detail
+    });
+
+    this.addToQueue(event);
   }
 
   _reportBehavior(behaviorData) {
     if (!this.config.behavior.enable) return;
 
-    const data = {
-      type: 'behavior',
-      subType: behaviorData.type,
-      timestamp: Date.now(),
-      ...behaviorData
-    };
+    const detail = { ...behaviorData };
+    delete detail.type;
+    delete detail.timestamp;
 
-    this.addToQueue(data);
+    const event = this._createEvent({
+      eventType: 'behavior',
+      subType: behaviorData.type,
+      timestamp: behaviorData.timestamp || Date.now(),
+      data: detail
+    });
+
+    this.addToQueue(event);
   }
 
-  report(data) {
-    if (!data || !this.config.serverUrl) return;
-
-    // 通过 EventBus 同步获取 sessionId 和 userId
+  _createEvent({ eventType, subType, timestamp, pageUrl, data, breadcrumbs = [] }) {
     const sessionId = eventBus.emit('core:getSessionId') || '';
     const userId = eventBus.emit('core:getUserId') || '';
     const userData = eventBus.emit('core:getUserData') || {};
 
-    const reportData = {
+    return createMonitorEvent({
+      eventType,
+      subType,
       appKey: this.config.appKey,
+      environment: this.config.environment || 'development',
+      release: this.config.release || '',
       sessionId,
       userId,
       userData,
-      data,
-      timestamp: Date.now(),
-      environment: {
+      timestamp,
+      pageUrl: pageUrl || window.location.href,
+      runtime: {
         userAgent: navigator.userAgent,
         language: navigator.language,
-        url: window.location.href,
         referrer: document.referrer,
         screenWidth: window.screen.width,
         screenHeight: window.screen.height,
         viewportWidth: window.innerWidth,
         viewportHeight: window.innerHeight,
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
-      }
+      },
+      data,
+      breadcrumbs
+    });
+  }
+
+  report(data, { preferBeacon = false } = {}) {
+    if (!data || !this.config.serverUrl) return;
+
+    const reportData = {
+      sentAt: Date.now(),
+      sdkVersion: this.config.sdkVersion || '1.0.0',
+      events: Array.isArray(data) ? data : [data]
     };
 
     const serializedData = JSON.stringify(reportData);
+
+    // 页面隐藏或卸载时优先交给浏览器异步发送，降低数据丢失概率。
+    if (preferBeacon) {
+      this.reportBeacon(serializedData);
+      return;
+    }
 
     switch (this.config.reporter.reportMethod) {
       case 'beacon':
@@ -189,7 +263,7 @@ class DataReporter {
     }
   }
 
-  reportFetch(data) {
+  reportFetch(data, retryAttempt = 0) {
     if (!window.fetch) {
       return this.reportImage(data);
     }
@@ -203,9 +277,38 @@ class DataReporter {
       body: data,
       credentials: 'include',
       keepalive: true
-    }).catch((error) => {
-      this.handleReportError(data, error);
-    });
+    })
+      .then((response) => {
+        if (!response.ok) {
+          const error = new Error(`Report request failed with status ${response.status}`);
+          error.status = response.status;
+          error.retryable = response.status === 408 ||
+            response.status === 429 ||
+            response.status >= 500;
+          throw error;
+        }
+
+        if (this.config.debug) {
+          console.log(`[Monitor] 上报成功: ${response.status}`);
+        }
+      })
+      .catch((error) => {
+        if (this.config.debug) {
+          console.warn(
+            `[Monitor] 上报失败，第 ${retryAttempt + 1} 次尝试:`,
+            error.message
+          );
+        }
+
+        // 参数、鉴权和地址等 4xx 问题不会因等待而自动恢复，直接报告失败。
+        if (error.retryable === false) {
+          eventBus.emit('reporter:report:failed', { data, error });
+          return;
+        }
+
+        // 网络异常没有 HTTP 状态，408/429/5xx 属于可能恢复的临时故障。
+        this.handleReportError(data, error, retryAttempt);
+      });
   }
 
   reportBeacon(data) {
@@ -241,18 +344,16 @@ class DataReporter {
     }
   }
 
-  handleReportError(data, error) {
-    const dataKey = JSON.stringify(data);
-    const count = this.retryCount[dataKey] || 0;
-
-    if (count < this.config.reporter.retryCount) {
-      this.retryCount[dataKey] = count + 1;
-
+  handleReportError(data, error, retryAttempt = 0) {
+    if (retryAttempt < this.config.reporter.retryCount) {
       setTimeout(() => {
-        this.report(data);
-      }, this.config.reporter.retryDelay * Math.pow(2, count));
+        // 重试同一份序列化数据，避免再次包装导致数据无限膨胀
+        this.reportFetch(data, retryAttempt + 1);
+      }, this.config.reporter.retryDelay * Math.pow(2, retryAttempt));
     } else {
-      delete this.retryCount[dataKey];
+      if (this.config.debug) {
+        console.error(`[Monitor] 上报失败，已达到最大重试次数 ${this.config.reporter.retryCount}`);
+      }
       eventBus.emit('reporter:report:failed', { data, error });
     }
   }

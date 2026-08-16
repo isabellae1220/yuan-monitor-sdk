@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "upload:sourcemaps": "node scripts/upload-source-maps.mjs --delete-after-upload",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview --host localhost --port 4173 --strictPort"
   },
   "dependencies": {
     "react": "^19.2.0",

@@ -5,3 +5,5 @@ coverage/
 *.log
 .env
 .env.local
+tmp/
+docs/LEARNING_PROGRESS.md

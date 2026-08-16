@@ -1,0 +1,95 @@
+:root {
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #172033;
+  background: #f4f6fa;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+.dashboard-shell {
+  min-height: 100vh;
+}
+
+.dashboard-sider {
+  position: sticky !important;
+  top: 0;
+  height: 100vh;
+  overflow: auto;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  height: 64px;
+  padding: 0 22px;
+  color: #fff;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.dashboard-main {
+  min-width: 0;
+}
+
+.dashboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 64px;
+  height: auto !important;
+  gap: 16px;
+  padding: 0 28px !important;
+  border-bottom: 1px solid #e6eaf0;
+  background: rgba(255, 255, 255, 0.94) !important;
+}
+
+.dashboard-content {
+  margin: 24px;
+}
+
+.page-card {
+  min-height: calc(100vh - 112px);
+}
+
+.page-description {
+  max-width: 720px;
+  margin-bottom: 0 !important;
+  color: #667085;
+  line-height: 1.8;
+}
+
+.performance-trend-chart {
+  width: 100%;
+  height: 360px;
+}
+
+@media (max-width: 720px) {
+  .dashboard-content {
+    margin: 14px;
+  }
+
+  .dashboard-header {
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 116px;
+    padding: 0 16px !important;
+  }
+}

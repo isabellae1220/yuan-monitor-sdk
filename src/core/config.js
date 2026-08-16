@@ -2,14 +2,32 @@ export default {
   // 基础配置
   appKey: '',
   serverUrl: '',
+  environment: 'development',
+  sdkVersion: '1.0.0',
+  // 被监控业务应用的发布版本，用于匹配对应构建产物的 Source Map。
+  release: '',
   sampleRate: 1,
+
+  // 隐私与数据最小化配置
+  privacy: {
+    enable: true,
+    maskFields: [
+      'password', 'passwd', 'token', 'authorization', 'cookie', 'secret',
+      'apiKey', 'phone', 'mobile', 'email', 'idCard', 'bankCard', 'cardNo'
+    ],
+    ignoreUrls: [],
+    maxTextLength: 100,
+    maxValueLength: 500
+  },
   
   // 错误监控配置
   error: {
     enable: true,
     captureGlobalErrors: true,
     capturePromiseRejections: true,
-    captureResourceErrors: true
+    captureResourceErrors: true,
+    enableDedupe: true,
+    dedupeWindow: 5000
   },
   
   // 性能监控配置
@@ -28,7 +46,8 @@ export default {
     captureRouteChanges: true,
     captureNetworkRequests: true,
     captureConsole: false,
-    maxBreadcrumbs: 20
+    maxBreadcrumbs: 20,
+    maxSelectorDepth: 5
   },
   
   // 高级功能配置
@@ -50,6 +69,7 @@ export default {
       continuousInterval: 10000 // 持续监控间隔（ms）
     },
     sourceMap: {
+      // 历史开发配置；生产错误通过 release 匹配后在监控服务端还原。
       enable: false,
       mapUrlTemplate: '',      // Source Map URL 模板
       serverParseUrl: '',      // 服务端解析接口

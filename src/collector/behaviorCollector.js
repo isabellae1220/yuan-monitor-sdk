@@ -1,4 +1,27 @@
 import eventBus from '../core/eventBus';
+import {
+  getClickTarget,
+  findMeaningfulTarget,
+  buildElementSelector
+} from '../core/elementLocator';
+import {
+  getFetchRequestInfo,
+  isSdkInternalRequest,
+  isSuccessfulStatus
+} from '../core/requestUtils';
+import {
+  resolvePrivacyConfig,
+  sanitizeBreadcrumbData,
+  shouldIgnoreUrl
+} from '../core/privacyProcessor';
+
+const normalizeUrl = (url, baseUrl) => {
+  try {
+    return new URL(String(url), baseUrl).href;
+  } catch (error) {
+    return String(url || baseUrl || '');
+  }
+};
 
 class BehaviorCollector {
   constructor(config) {
@@ -11,6 +34,7 @@ class BehaviorCollector {
     this.originalReplaceState = null;
     this.originalXHROpen = null;
     this.originalXHRSend = null;
+    this.originalXHRSetRequestHeader = null;
     this.originalFetch = null;
     this.originalConsole = {};
 
@@ -49,10 +73,14 @@ class BehaviorCollector {
   }
 
   addBreadcrumb(type, data) {
+    const safeData = sanitizeBreadcrumbData(
+      data,
+      resolvePrivacyConfig(this.config.privacy)
+    );
     const breadcrumb = {
       type,
       timestamp: Date.now(),
-      ...data
+      ...safeData
     };
 
     this.breadcrumbs.push(breadcrumb);
@@ -77,7 +105,11 @@ class BehaviorCollector {
 
   setupClickHandler() {
     this._clickHandler = (event) => {
-      const target = event.target;
+      const rawTarget = getClickTarget(event);
+      const target = findMeaningfulTarget(
+        rawTarget,
+        this.config.behavior.maxSelectorDepth
+      );
       if (!target || target.tagName === 'BODY') return;
 
       const tagName = target.tagName.toLowerCase();
@@ -86,6 +118,9 @@ class BehaviorCollector {
       const text = target.textContent ? target.textContent.trim().substring(0, 100) : '';
 
       const domInfo = `<${tagName} ${id} ${className}>${text}</${tagName}>`;
+      const locator = buildElementSelector(target, {
+        maxDepth: this.config.behavior.maxSelectorDepth
+      });
 
       this.addBreadcrumb('click', {
         dom: domInfo,
@@ -93,6 +128,8 @@ class BehaviorCollector {
         id: target.id,
         className: target.className,
         text,
+        selector: locator.selector,
+        selectorUnique: locator.isUnique,
         x: event.clientX,
         y: event.clientY
       });
@@ -105,57 +142,63 @@ class BehaviorCollector {
     this.originalPushState = history.pushState;
     this.originalReplaceState = history.replaceState;
 
-    const handleRouteChange = (method, args) => {
-      const url = args.length > 2 ? args[2] : undefined;
-      if (url) {
-        const from = this.lastHref;
-        const to = String(url);
-        this.lastHref = to;
+    const handleRouteChange = (method, from, to) => {
+      if (!to || from === to) return;
 
-        this.addBreadcrumb('route', {
-          method,
-          from,
-          to,
-          fullUrl: window.location.origin + to
-        });
+      this.lastHref = to;
+      this.addBreadcrumb('route', {
+        method,
+        from,
+        to,
+        fullUrl: to
+      });
+    };
+
+    const collector = this;
+
+    history.pushState = function(...args) {
+      const requestedUrl = args.length > 2 ? args[2] : undefined;
+      const from = collector.lastHref || window.location.href;
+      const result = collector.originalPushState.apply(this, args);
+
+      if (requestedUrl !== undefined && requestedUrl !== null) {
+        const requestedFullUrl = normalizeUrl(requestedUrl, from);
+        const browserFullUrl = normalizeUrl(window.location.href, from);
+        const to = browserFullUrl !== from ? browserFullUrl : requestedFullUrl;
+        handleRouteChange('pushState', from, to);
       }
+
+      return result;
     };
 
-    history.pushState = (...args) => {
-      handleRouteChange('pushState', args);
-      return this.originalPushState.apply(history, args);
-    };
+    history.replaceState = function(...args) {
+      const requestedUrl = args.length > 2 ? args[2] : undefined;
+      const from = collector.lastHref || window.location.href;
+      const result = collector.originalReplaceState.apply(this, args);
 
-    history.replaceState = (...args) => {
-      handleRouteChange('replaceState', args);
-      return this.originalReplaceState.apply(history, args);
+      if (requestedUrl !== undefined && requestedUrl !== null) {
+        const requestedFullUrl = normalizeUrl(requestedUrl, from);
+        const browserFullUrl = normalizeUrl(window.location.href, from);
+        const to = browserFullUrl !== from ? browserFullUrl : requestedFullUrl;
+        handleRouteChange('replaceState', from, to);
+      }
+
+      return result;
     };
 
     // 监听 popstate 事件
     this._popstateHandler = () => {
       const from = this.lastHref;
-      const to = window.location.href;
-      this.lastHref = to;
-
-      this.addBreadcrumb('route', {
-        method: 'popstate',
-        from,
-        to
-      });
+      const to = normalizeUrl(window.location.href, from);
+      handleRouteChange('popstate', from, to);
     };
     window.addEventListener('popstate', this._popstateHandler);
 
     // 监听 hashchange 事件
-    this._hashchangeHandler = () => {
-      const from = this.lastHref;
-      const to = window.location.href;
-      this.lastHref = to;
-
-      this.addBreadcrumb('route', {
-        method: 'hashchange',
-        from,
-        to
-      });
+    this._hashchangeHandler = (event) => {
+      const from = normalizeUrl(event?.oldURL || this.lastHref, window.location.href);
+      const to = normalizeUrl(event?.newURL || window.location.href, from);
+      handleRouteChange('hashchange', from, to);
     };
     window.addEventListener('hashchange', this._hashchangeHandler);
   }
@@ -173,29 +216,55 @@ class BehaviorCollector {
     // 保存原始方法
     this.originalXHROpen = XMLHttpRequest.prototype.open;
     this.originalXHRSend = XMLHttpRequest.prototype.send;
+    this.originalXHRSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
     const collector = this;
 
     XMLHttpRequest.prototype.open = function(method, url, ...args) {
       this._monitor = {
         method: method.toUpperCase(),
-        url: String(url),
-        startTime: Date.now()
+        url: normalizeUrl(url, window.location.href),
+        headers: {}
       };
       return collector.originalXHROpen.apply(this, [method, url, ...args]);
     };
 
+    if (this.originalXHRSetRequestHeader) {
+      XMLHttpRequest.prototype.setRequestHeader = function(name, value) {
+        if (this._monitor) {
+          this._monitor.headers[String(name).toLowerCase()] = String(value);
+        }
+        return collector.originalXHRSetRequestHeader.apply(this, [name, value]);
+      };
+    }
+
     XMLHttpRequest.prototype.send = function(body, ...args) {
-      if (this._monitor && this._monitor.url.includes('X-SDK-Internal')) {
+      const isInternal = this._monitor && isSdkInternalRequest({
+        url: this._monitor.url,
+        headers: this._monitor.headers,
+        serverUrl: collector.config.serverUrl,
+        baseUrl: window.location.href
+      });
+      const isIgnored = this._monitor && shouldIgnoreUrl(
+        this._monitor.url,
+        resolvePrivacyConfig(collector.config.privacy).ignoreUrls
+      );
+
+      if (isInternal || isIgnored) {
         return collector.originalXHRSend.apply(this, [body, ...args]);
       }
 
       if (this._monitor) {
-        this._monitor.reqData = body;
+        this._monitor.startTime = Date.now();
 
         const xhr = this;
+        let completed = false;
 
-        const handleLoad = () => {
+        const reportResult = (errorType = '') => {
+          if (completed) return;
+          completed = true;
+
           const endTime = Date.now();
+          const success = !errorType && isSuccessfulStatus(xhr.status);
           collector.addBreadcrumb('xhr', {
             method: xhr._monitor.method,
             url: xhr._monitor.url,
@@ -203,27 +272,17 @@ class BehaviorCollector {
             endTime,
             elapsedTime: endTime - xhr._monitor.startTime,
             status: xhr.status,
+            success,
+            error: !success,
+            errorType: errorType || (success ? '' : 'http'),
             type: 'xhr'
           });
         };
 
-        const handleError = () => {
-          const endTime = Date.now();
-          collector.addBreadcrumb('xhr', {
-            method: xhr._monitor.method,
-            url: xhr._monitor.url,
-            startTime: xhr._monitor.startTime,
-            endTime,
-            elapsedTime: endTime - xhr._monitor.startTime,
-            status: xhr.status,
-            error: true,
-            type: 'xhr'
-          });
-        };
-
-        xhr.addEventListener('load', handleLoad);
-        xhr.addEventListener('error', handleError);
-        xhr.addEventListener('abort', handleError);
+        xhr.addEventListener('load', () => reportResult());
+        xhr.addEventListener('error', () => reportResult('network'));
+        xhr.addEventListener('abort', () => reportResult('abort'));
+        xhr.addEventListener('timeout', () => reportResult('timeout'));
       }
 
       return collector.originalXHRSend.apply(this, [body, ...args]);
@@ -239,32 +298,45 @@ class BehaviorCollector {
 
     const collector = this;
 
-    window.fetch = async (url, config = {}) => {
-      const headers = config.headers || {};
-      const isSdkInternal = headers['X-SDK-Internal'] === 'true';
+    window.fetch = async (input, config = {}) => {
+      const requestInfo = getFetchRequestInfo(input, config, window.location.href);
+      const isSdkInternal = isSdkInternalRequest({
+        ...requestInfo,
+        serverUrl: collector.config.serverUrl,
+        baseUrl: window.location.href
+      });
+      const isIgnored = shouldIgnoreUrl(
+        requestInfo.url,
+        resolvePrivacyConfig(collector.config.privacy).ignoreUrls
+      );
 
-      if (isSdkInternal) {
-        return collector.originalFetch(url, config);
+      if (isSdkInternal || isIgnored) {
+        // 原生 fetch 需要保留 window 作为调用上下文，否则部分浏览器会抛出 Illegal invocation
+        return collector.originalFetch.call(window, input, config);
       }
 
       const startTime = Date.now();
-      const method = (config.method || 'GET').toUpperCase();
 
       const monitorData = {
-        method,
-        url: String(url),
+        method: requestInfo.method,
+        url: requestInfo.url,
         startTime,
-        reqData: config.body,
         type: 'fetch'
       };
 
       try {
-        const response = await collector.originalFetch(url, config);
+        const response = await collector.originalFetch.call(window, input, config);
         const endTime = Date.now();
+        const success = typeof response.ok === 'boolean'
+          ? response.ok
+          : isSuccessfulStatus(response.status);
 
         monitorData.endTime = endTime;
         monitorData.elapsedTime = endTime - startTime;
         monitorData.status = response.status;
+        monitorData.success = success;
+        monitorData.error = !success;
+        monitorData.errorType = success ? '' : 'http';
 
         collector.addBreadcrumb('fetch', monitorData);
 
@@ -274,7 +346,9 @@ class BehaviorCollector {
 
         monitorData.endTime = endTime;
         monitorData.elapsedTime = endTime - startTime;
+        monitorData.success = false;
         monitorData.error = true;
+        monitorData.errorType = 'network';
         monitorData.errorMessage = error.message;
 
         collector.addBreadcrumb('fetch', {
@@ -334,6 +408,10 @@ class BehaviorCollector {
     if (this.originalXHRSend) {
       XMLHttpRequest.prototype.send = this.originalXHRSend;
       this.originalXHRSend = null;
+    }
+    if (this.originalXHRSetRequestHeader) {
+      XMLHttpRequest.prototype.setRequestHeader = this.originalXHRSetRequestHeader;
+      this.originalXHRSetRequestHeader = null;
     }
 
     // 恢复原始 fetch
