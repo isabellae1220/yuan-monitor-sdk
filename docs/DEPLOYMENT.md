@@ -14,6 +14,14 @@ React Dashboard（Render Static Site）
 
 这样保留了项目原本的“采集端、服务端、展示端”分层，也方便面试时演示完整监控闭环。
 
+## 当前线上地址
+
+- Demo：https://tracelens-demo.onrender.com
+- Dashboard：https://tracelens-dashboard.onrender.com/errors
+- API 健康检查：https://tracelens-api-oiko.onrender.com/api/health
+
+Render 为 API 分配了带随机后缀的公开域名，部署配置必须以实际域名 `tracelens-api-oiko.onrender.com` 为准，不能根据服务名自行推测地址。
+
 ## 0. 部署前提
 
 云平台读取的是 GitHub 仓库，而不是电脑里的本地文件。因此必须先把当前完整版本提交并推送到 GitHub，再创建 Render 服务。
@@ -33,7 +41,7 @@ mongodb+srv://monitor_user:<password>@<cluster>/yuan_monitor?retryWrites=true&w=
 
 ## 2. 部署 Express API
 
-在 Render 创建 Web Service，连接 `gulugulu33/yuan-monitor-sdk`：
+在 Render 创建 Web Service，连接当前维护的 GitHub 仓库 `isabellae1220/yuan-monitor-sdk`：
 
 ```text
 Runtime: Node
@@ -51,16 +59,16 @@ ADMIN_API_TOKEN=<足够长的随机字符串>
 CORS_ORIGINS=
 ```
 
-首次部署完成后记录 API 地址，例如：
+本次部署得到的 API 地址为：
 
 ```text
-https://yuan-monitor-api.onrender.com
+https://tracelens-api-oiko.onrender.com
 ```
 
 访问以下地址，看到 `success: true` 表示 API 和数据库连接均已启动：
 
 ```text
-https://yuan-monitor-api.onrender.com/api/health
+https://tracelens-api-oiko.onrender.com/api/health
 ```
 
 ## 3. 部署 React Demo
