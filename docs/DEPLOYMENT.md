@@ -1,4 +1,4 @@
-# Yuan Monitor 在线部署指南
+# TraceLens 在线部署指南
 
 本项目推荐使用以下结构部署：
 

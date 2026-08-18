@@ -24,7 +24,7 @@ function DashboardLayout() {
   return (
     <Layout className="dashboard-shell">
       <Sider className="dashboard-sider" width={224} breakpoint="lg" collapsedWidth={0}>
-        <div className="brand">Yuan Monitor</div>
+        <div className="brand">TraceLens</div>
         <Menu
           theme="dark"
           mode="inline"

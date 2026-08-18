@@ -1,4 +1,4 @@
-# Yuan Monitor SDK
+# TraceLens 前端监控与分析平台
 
 前端应用监控SDK，支持 React 和 Vue 框架。提供错误监控、性能分析、用户行为追踪和录屏回放功能。
 

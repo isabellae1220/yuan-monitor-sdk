@@ -152,8 +152,8 @@ function App({ monitor }) {
           <img src={reactLogo} className="logo react" alt="React logo" />
         </a>
       </div>
-      <h1>Vite + React + Yuan Monitor SDK</h1>
-      <p>点击下方按钮测试监控SDK功能</p>
+      <h1>TraceLens Monitor Demo</h1>
+      <p>点击下方按钮体验前端错误、性能与行为监控</p>
 
       <div className="card">
         <button onClick={() => setCount((count) => count + 1)}>
